@@ -328,11 +328,11 @@ function openImageEditorOverlay(image){
     return null;
   }
 
-  overlayCanvas.addEventListener('mousedown', (e) => { dragging = true; lastPoint = getPointFromEvent(e); });
+  overlayCanvas.addEventListener('mousedown', (e) => { if(e.target.tagName==='BUTTON') return; dragging = true; lastPoint = getPointFromEvent(e); });
   window.addEventListener('mousemove', (e) => { if (!dragging) return; const p = getPointFromEvent(e); pos.x += p.x - lastPoint.x; pos.y += p.y - lastPoint.y; lastPoint = p; draw(); });
   window.addEventListener('mouseup', () => { dragging = false; });
 
-  overlayCanvas.addEventListener('touchstart', (e) => { if (e.touches.length === 1) { lastPoint = getPointFromEvent(e, 0); dragging = true; } }, { passive: false });
+  overlayCanvas.addEventListener('touchstart', (e) => { if(e.target.tagName==='BUTTON') return; if (e.touches.length === 1) { lastPoint = getPointFromEvent(e, 0); dragging = true; } }, { passive: false });
   overlayCanvas.addEventListener('touchmove', (e) => { if (dragging && e.touches.length === 1) { const p = getPointFromEvent(e, 0); pos.x += p.x - lastPoint.x; pos.y += p.y - lastPoint.y; lastPoint = p; draw(); } }, { passive: false });
   overlayCanvas.addEventListener('touchend', (e) => { if (e.touches.length === 0) dragging = false; });
 
