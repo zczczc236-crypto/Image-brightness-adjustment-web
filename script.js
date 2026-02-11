@@ -181,6 +181,75 @@ function redo() {
 undoBtn.addEventListener('click', () => undo());
 redoBtn.addEventListener('click', () => redo());
 
+/* ===== 레이어 관련 ===== */
+function createLayer(name = `Layer ${layers.length + 1}`) {
+  const canvas = document.createElement('canvas');
+  canvas.className = 'layer-canvas';
+  canvas.style.position = 'absolute';
+  canvas.style.left = '0';
+  canvas.style.top = '0';
+  canvas.style.touchAction = 'none';
+  container.appendChild(canvas);
+  const ctx = setCanvasSizeForDisplay(canvas, container.clientWidth || 800, container.clientHeight || 600);
+  ctx.lineJoin = 'round';
+  ctx.lineCap = 'round';
+  const layer = { canvas, ctx, name, brightness: 1, visible: true };
+  layers.push(layer);
+  activeLayer = layer;
+  attachDrawingEvents(canvas);
+  drawLayers();
+  saveHistory();
+  updateLayersPanel();
+  return layer;
+}
+
+function deleteLayer(layer) {
+  if (layers.length <= 1) return;
+  const idx = layers.indexOf(layer);
+  layers.splice(idx, 1);
+  if (layer.canvas.parentElement) container.removeChild(layer.canvas);
+  if (activeLayer === layer) activeLayer = layers[layers.length - 1];
+  layers.forEach((l, i) => { l.canvas.style.zIndex = i; });
+  updateLayersPanel();
+  saveHistory();
+}
+
+function moveLayer(layer, dir) {
+  const idx = layers.indexOf(layer);
+  const newIdx = idx + dir;
+  if (newIdx < 0 || newIdx >= layers.length) return;
+  layers.splice(idx, 1);
+  layers.splice(newIdx, 0, layer);
+  layers.forEach((l, i) => { l.canvas.style.zIndex = i; container.appendChild(l.canvas); });
+  updateLayersPanel();
+  saveHistory();
+}
+
+function mergeActiveWithNeighbor() {
+  if (layers.length < 2) return;
+  const idx = layers.indexOf(activeLayer);
+  let targetIdx = idx - 1;
+  if (targetIdx < 0) targetIdx = idx + 1;
+  if (targetIdx < 0 || targetIdx >= layers.length) return;
+  const target = layers[targetIdx];
+  target.ctx.save();
+  target.ctx.globalCompositeOperation = 'source-over';
+  target.ctx.drawImage(activeLayer.canvas, 0, 0, container.clientWidth, container.clientHeight);
+  target.ctx.restore();
+  deleteLayer(activeLayer);
+  activeLayer = target;
+  updateLayersPanel();
+  saveHistory();
+}
+
+function drawLayers() {
+  layers.forEach(layer => {
+    layer.canvas.style.display = layer.visible ? 'block' : 'none';
+    layer.canvas.style.filter = `brightness(${layer.brightness})`;
+  });
+}
+
+
 /* ===== 레이어 유틸 및 UI ===== */
 function applyLayerStyles(layer) {
   // apply css filters and opacity and brightness
