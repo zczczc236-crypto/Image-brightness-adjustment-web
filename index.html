@@ -1,0 +1,296 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Pro Drawing Web</title>
+<style>
+:root{
+  --bg:#0e0e11; --panel:#1b1c22cc; --border:#2d2f3a; --accent:#7aa2ff; --text:#e6e6eb;
+}
+*{box-sizing:border-box;}
+html,body{margin:0;height:100%;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",system-ui;background:var(--bg);color:var(--text);overflow:hidden;}
+#top{height:52px;display:flex;align-items:center;gap:8px;padding:6px 10px;background:linear-gradient(180deg,#1a1b22,#14151a);border-bottom:1px solid var(--border);}
+#top select,#top input[type=range],#top input[type=color]{height:32px;}
+#top button{height:34px;min-width:34px;padding:0 10px;border-radius:8px;background:#232531;border:1px solid var(--border);color:var(--text);cursor:pointer;}
+#top button:hover{background:#2d3040;} #top button:active{transform:scale(.96);}
+#wrap{position:relative;width:100%;height:calc(100% - 52px);display:flex;justify-content:center;align-items:center;}
+canvas{background:#fff;border-radius:12px;box-shadow:0 0 0 1px #000,0 20px 60px #000a;touch-action:none;}
+#hud{position:absolute;right:12px;bottom:12px;background:var(--panel);backdrop-filter:blur(10px);border:1px solid var(--border);border-radius:12px;padding:10px;font-size:12px;}
+#hud input{width:120px;}
+#frames{position:absolute;bottom:0;left:50%;transform:translateX(-50%);display:flex;gap:6px;padding:8px 12px;background:var(--panel);backdrop-filter:blur(10px);border:1px solid var(--border);border-radius:14px 14px 0 0;}
+.frame{width:44px;height:44px;border-radius:8px;background:#111;border:1px solid var(--border);}
+input[type=range]{accent-color:var(--accent);}
+.layer-list{position:absolute;left:12px;top:60px;background:var(--panel);backdrop-filter:blur(10px);padding:8px;border-radius:12px;max-height:300px;overflow:auto;font-size:12px;}
+.layer-item{padding:4px 6px;margin-bottom:4px;background:#222;border-radius:6px;display:flex;justify-content:space-between;align-items:center;cursor:pointer;}
+.layer-item.active{background:var(--accent);}
+</style>
+</head>
+<body>
+
+<div id="top">
+  <select id="brush"></select>
+  <input type="range" id="size" min="1" max="100" value="10" title="굵기">
+  <input type="range" id="opacity" min="0" max="1" step="0.01" value="1" title="불투명도">
+  <input type="color" id="color" title="색상">
+  <button id="undo">↶</button>
+  <button id="redo">↷</button>
+  <button id="fill">🪣</button>
+  <button id="eraser">⌫</button>
+  <button id="img">🖼</button>
+  <button id="save">💾</button>
+  <button id="share">🔗</button>
+  <button id="anim">▸</button>
+</div>
+
+<div id="wrap">
+  <canvas id="view"></canvas>
+  <div id="frames"></div>
+  <div id="hud">
+    ⏱ <span id="time">0</span>s<br>
+    흔들림 <input type="range" id="smooth" min="1" max="20" value="5"><br>
+    FPS <input type="range" id="fps" min="1" max="38" value="12">
+  </div>
+  <div class="layer-list" id="layers"></div>
+</div>
+
+<input type="file" id="file" accept="image/*" hidden>
+
+<script>
+const canvas=document.getElementById("view");
+const ctx=canvas.getContext("2d");
+let w,h;
+function resize(){w=Math.min(innerWidth*0.95,1400);h=Math.min((innerHeight-52)*0.95,900);canvas.width=w;canvas.height=h;redraw();}
+window.addEventListener("resize",resize);
+resize();
+
+/* ---------- STATE ---------- */
+let drawing=false,px=0,py=0;
+let history=[],future=[];
+let t0=Date.now();
+let timelapse=[];
+let playing=false;
+
+/* ---------- LAYER SYSTEM ---------- */
+let layers=[newLayer("Background")],activeLayer=0;
+const layerList=document.getElementById("layers");
+updateLayerUI();
+function newLayer(name){let c=document.createElement("canvas");c.width=w;c.height=h;let ctx=c.getContext("2d");return {canvas:c,ctx:ctx,name:name||"Layer",opacity:1,visible:true};}
+function updateLayerUI(){layerList.innerHTML="";layers.forEach((l,i)=>{let div=document.createElement("div");div.className="layer-item"+(i===activeLayer?" active":"");div.textContent=l.name;div.onclick=()=>{activeLayer=i;updateLayerUI();};layerList.appendChild(div);});}
+
+/* ---------- BRUSHES ---------- */
+const brush=document.getElementById("brush");
+const brushTypes=["Pencil","Pen","Water","Oil","Marker"];
+for(let i=1;i<=50;i++){brush.innerHTML+=`<option>${brushTypes[i%5]} ${i}</option>`;}
+
+/* ---------- DRAW ---------- */
+const size=document.getElementById("size"),opacity=document.getElementById("opacity"),color=document.getElementById("color"),smooth=document.getElementById("smooth");
+canvas.onpointerdown=e=>{drawing=true;[px,py]=pos(e);saveState();}
+canvas.onpointermove=e=>{
+  if(!drawing)return;
+  let [x,y]=pos(e); let s=+smooth.value;
+  x=(px*(s-1)+x)/s;y=(py*(s-1)+y)/s;
+  let l=layers[activeLayer]; l.ctx.strokeStyle=color.value; l.ctx.globalAlpha=opacity.value; l.ctx.lineWidth=size.value; l.ctx.lineCap="round";
+  // 브러시 질감
+  if(brush.value.includes("Water")){l.ctx.globalAlpha=opacity.value*0.3;l.ctx.lineWidth*=1.2;}
+  if(brush.value.includes("Oil")){l.ctx.shadowBlur=3;l.ctx.shadowColor=color.value;}
+  l.ctx.beginPath();l.ctx.moveTo(px,py);l.ctx.lineTo(x,y);l.ctx.stroke();
+  px=x;py=y;
+  timelapse.push(snapshot());
+  redraw();
+}
+onpointerup=()=>drawing=false;
+function pos(e){let r=canvas.getBoundingClientRect();return [e.clientX-r.left,e.clientY-r.top];}
+
+/* ---------- REDRAW ---------- */
+function redraw(){ctx.clearRect(0,0,w,h);layers.forEach(l=>{if(!l.visible)return;ctx.globalAlpha=l.opacity;ctx.drawImage(l.canvas,0,0);});ctx.globalAlpha=1;}
+function snapshot(){return canvas.toDataURL();}
+
+/* ---------- UNDO/REDO ---------- */
+function saveState(){history.push(snapshot());future.length=0;}
+document.getElementById("undo").onclick=()=>{if(!history.length)return;future.push(snapshot());load(history.pop());}
+document.getElementById("redo").onclick=()=>{if(!future.length)return;history.push(snapshot());load(future.pop());}
+function load(d){let i=new Image();i.src=d;i.onload=()=>{ctx.clearRect(0,0,w,h);ctx.drawImage(i,0,0);}}
+
+/* ---------- TOOLS ---------- */
+document.getElementById("fill").onclick=()=>{let l=layers[activeLayer];l.ctx.fillStyle=color.value;l.ctx.globalAlpha=opacity.value;l.ctx.fillRect(0,0,w,h);redraw();}
+document.getElementById("eraser").onclick=()=>{let l=layers[activeLayer];l.ctx.globalCompositeOperation="destination-out";setTimeout(()=>{l.ctx.globalCompositeOperation="source-over";},100);}
+
+/* ---------- IMAGE ---------- */
+document.getElementById("img").onclick=()=>document.getElementById("file").click();
+document.getElementById("file").onchange=e=>{let f=e.target.files[0];if(!f)return;let img=new Image();img.src=URL.createObjectURL(f);img.onload=()=>{layers[activeLayer].ctx.drawImage(img,0,0);redraw();};}
+
+/* ---------- SAVE / SHARE ---------- */
+document.getElementById("save").onclick=()=>{localStorage.gallery=(localStorage.gallery||"")+"|"+snapshot();alert("갤러리에 저장됨");}
+document.getElementById("share").onclick=()=>{prompt("공유 링크",snapshot());}
+
+/* ---------- ANIMATION ---------- */
+document.getElementById("anim").onclick=()=>{playing=!playing;if(playing)playAnim();}
+function playAnim(){let i=0;let fps=+document.getElementById("fps").value;let id=setInterval(()=>{if(!playing){clearInterval(id);return;}if(!timelapse.length)return;load(timelapse[i++%timelapse.length]);},1000/fps);}
+
+/* ---------- TIME ---------- */
+setInterval(()=>{document.getElementById("time").textContent=((Date.now()-t0)/1000)|0;},1000);
+
+/* ---------- MOBILE GESTURES ---------- */
+let scale=1,offsetX=0,offsetY=0,touchStartDist=0,touchStartScale=1,touchStart=[0,0],touchOffsetStart=[0,0];
+canvas.addEventListener("touchstart",e=>{
+  if(e.touches.length===2){touchStartDist=getDist(e.touches);touchStartScale=scale;touchOffsetStart=[offsetX,offsetY];}
+  else if(e.touches.length===1){touchStart=[e.touches[0].clientX,e.touches[0].clientY];}
+});
+canvas.addEventListener("touchmove",e=>{
+  e.preventDefault();
+  if(e.touches.length===2){let d=getDist(e.touches);scale=touchStartScale*d/touchStartDist;offsetX=touchOffsetStart[0];offsetY=touchOffsetStart[1];redraw();}
+  else if(e.touches.length===1){offsetX+=e.touches[0].clientX-touchStart[0];offsetY+=e.touches[0].clientY-touchStart[1];touchStart=[e.touches[0].clientX,e.touches[0].clientY];redraw();}
+});
+function getDist(t){return Math.hypot(t[0].clientX-t[1].clientX,t[0].clientY-t[1].clientY);}
+</script>
+</body>
+</html>
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Pro Drawing Web</title>
+<style>
+:root{
+  --bg:#0e0e11; --panel:#1b1c22cc; --border:#2d2f3a; --accent:#7aa2ff; --text:#e6e6eb;
+}
+*{box-sizing:border-box;}
+html,body{margin:0;height:100%;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",system-ui;background:var(--bg);color:var(--text);overflow:hidden;}
+#top{height:52px;display:flex;align-items:center;gap:8px;padding:6px 10px;background:linear-gradient(180deg,#1a1b22,#14151a);border-bottom:1px solid var(--border);}
+#top select,#top input[type=range],#top input[type=color]{height:32px;}
+#top button{height:34px;min-width:34px;padding:0 10px;border-radius:8px;background:#232531;border:1px solid var(--border);color:var(--text);cursor:pointer;}
+#top button:hover{background:#2d3040;} #top button:active{transform:scale(.96);}
+#wrap{position:relative;width:100%;height:calc(100% - 52px);display:flex;justify-content:center;align-items:center;}
+canvas{background:#fff;border-radius:12px;box-shadow:0 0 0 1px #000,0 20px 60px #000a;touch-action:none;}
+#hud{position:absolute;right:12px;bottom:12px;background:var(--panel);backdrop-filter:blur(10px);border:1px solid var(--border);border-radius:12px;padding:10px;font-size:12px;}
+#hud input{width:120px;}
+#frames{position:absolute;bottom:0;left:50%;transform:translateX(-50%);display:flex;gap:6px;padding:8px 12px;background:var(--panel);backdrop-filter:blur(10px);border:1px solid var(--border);border-radius:14px 14px 0 0;}
+.frame{width:44px;height:44px;border-radius:8px;background:#111;border:1px solid var(--border);}
+input[type=range]{accent-color:var(--accent);}
+.layer-list{position:absolute;left:12px;top:60px;background:var(--panel);backdrop-filter:blur(10px);padding:8px;border-radius:12px;max-height:300px;overflow:auto;font-size:12px;}
+.layer-item{padding:4px 6px;margin-bottom:4px;background:#222;border-radius:6px;display:flex;justify-content:space-between;align-items:center;cursor:pointer;}
+.layer-item.active{background:var(--accent);}
+</style>
+</head>
+<body>
+
+<div id="top">
+  <select id="brush"></select>
+  <input type="range" id="size" min="1" max="100" value="10" title="굵기">
+  <input type="range" id="opacity" min="0" max="1" step="0.01" value="1" title="불투명도">
+  <input type="color" id="color" title="색상">
+  <button id="undo">↶</button>
+  <button id="redo">↷</button>
+  <button id="fill">🪣</button>
+  <button id="eraser">⌫</button>
+  <button id="img">🖼</button>
+  <button id="save">💾</button>
+  <button id="share">🔗</button>
+  <button id="anim">▸</button>
+</div>
+
+<div id="wrap">
+  <canvas id="view"></canvas>
+  <div id="frames"></div>
+  <div id="hud">
+    ⏱ <span id="time">0</span>s<br>
+    흔들림 <input type="range" id="smooth" min="1" max="20" value="5"><br>
+    FPS <input type="range" id="fps" min="1" max="38" value="12">
+  </div>
+  <div class="layer-list" id="layers"></div>
+</div>
+
+<input type="file" id="file" accept="image/*" hidden>
+
+<script>
+const canvas=document.getElementById("view");
+const ctx=canvas.getContext("2d");
+let w,h;
+function resize(){w=Math.min(innerWidth*0.95,1400);h=Math.min((innerHeight-52)*0.95,900);canvas.width=w;canvas.height=h;redraw();}
+window.addEventListener("resize",resize);
+resize();
+
+/* ---------- STATE ---------- */
+let drawing=false,px=0,py=0;
+let history=[],future=[];
+let t0=Date.now();
+let timelapse=[];
+let playing=false;
+
+/* ---------- LAYER SYSTEM ---------- */
+let layers=[newLayer("Background")],activeLayer=0;
+const layerList=document.getElementById("layers");
+updateLayerUI();
+function newLayer(name){let c=document.createElement("canvas");c.width=w;c.height=h;let ctx=c.getContext("2d");return {canvas:c,ctx:ctx,name:name||"Layer",opacity:1,visible:true};}
+function updateLayerUI(){layerList.innerHTML="";layers.forEach((l,i)=>{let div=document.createElement("div");div.className="layer-item"+(i===activeLayer?" active":"");div.textContent=l.name;div.onclick=()=>{activeLayer=i;updateLayerUI();};layerList.appendChild(div);});}
+
+/* ---------- BRUSHES ---------- */
+const brush=document.getElementById("brush");
+const brushTypes=["Pencil","Pen","Water","Oil","Marker"];
+for(let i=1;i<=50;i++){brush.innerHTML+=`<option>${brushTypes[i%5]} ${i}</option>`;}
+
+/* ---------- DRAW ---------- */
+const size=document.getElementById("size"),opacity=document.getElementById("opacity"),color=document.getElementById("color"),smooth=document.getElementById("smooth");
+canvas.onpointerdown=e=>{drawing=true;[px,py]=pos(e);saveState();}
+canvas.onpointermove=e=>{
+  if(!drawing)return;
+  let [x,y]=pos(e); let s=+smooth.value;
+  x=(px*(s-1)+x)/s;y=(py*(s-1)+y)/s;
+  let l=layers[activeLayer]; l.ctx.strokeStyle=color.value; l.ctx.globalAlpha=opacity.value; l.ctx.lineWidth=size.value; l.ctx.lineCap="round";
+  // 브러시 질감
+  if(brush.value.includes("Water")){l.ctx.globalAlpha=opacity.value*0.3;l.ctx.lineWidth*=1.2;}
+  if(brush.value.includes("Oil")){l.ctx.shadowBlur=3;l.ctx.shadowColor=color.value;}
+  l.ctx.beginPath();l.ctx.moveTo(px,py);l.ctx.lineTo(x,y);l.ctx.stroke();
+  px=x;py=y;
+  timelapse.push(snapshot());
+  redraw();
+}
+onpointerup=()=>drawing=false;
+function pos(e){let r=canvas.getBoundingClientRect();return [e.clientX-r.left,e.clientY-r.top];}
+
+/* ---------- REDRAW ---------- */
+function redraw(){ctx.clearRect(0,0,w,h);layers.forEach(l=>{if(!l.visible)return;ctx.globalAlpha=l.opacity;ctx.drawImage(l.canvas,0,0);});ctx.globalAlpha=1;}
+function snapshot(){return canvas.toDataURL();}
+
+/* ---------- UNDO/REDO ---------- */
+function saveState(){history.push(snapshot());future.length=0;}
+document.getElementById("undo").onclick=()=>{if(!history.length)return;future.push(snapshot());load(history.pop());}
+document.getElementById("redo").onclick=()=>{if(!future.length)return;history.push(snapshot());load(future.pop());}
+function load(d){let i=new Image();i.src=d;i.onload=()=>{ctx.clearRect(0,0,w,h);ctx.drawImage(i,0,0);}}
+
+/* ---------- TOOLS ---------- */
+document.getElementById("fill").onclick=()=>{let l=layers[activeLayer];l.ctx.fillStyle=color.value;l.ctx.globalAlpha=opacity.value;l.ctx.fillRect(0,0,w,h);redraw();}
+document.getElementById("eraser").onclick=()=>{let l=layers[activeLayer];l.ctx.globalCompositeOperation="destination-out";setTimeout(()=>{l.ctx.globalCompositeOperation="source-over";},100);}
+
+/* ---------- IMAGE ---------- */
+document.getElementById("img").onclick=()=>document.getElementById("file").click();
+document.getElementById("file").onchange=e=>{let f=e.target.files[0];if(!f)return;let img=new Image();img.src=URL.createObjectURL(f);img.onload=()=>{layers[activeLayer].ctx.drawImage(img,0,0);redraw();};}
+
+/* ---------- SAVE / SHARE ---------- */
+document.getElementById("save").onclick=()=>{localStorage.gallery=(localStorage.gallery||"")+"|"+snapshot();alert("갤러리에 저장됨");}
+document.getElementById("share").onclick=()=>{prompt("공유 링크",snapshot());}
+
+/* ---------- ANIMATION ---------- */
+document.getElementById("anim").onclick=()=>{playing=!playing;if(playing)playAnim();}
+function playAnim(){let i=0;let fps=+document.getElementById("fps").value;let id=setInterval(()=>{if(!playing){clearInterval(id);return;}if(!timelapse.length)return;load(timelapse[i++%timelapse.length]);},1000/fps);}
+
+/* ---------- TIME ---------- */
+setInterval(()=>{document.getElementById("time").textContent=((Date.now()-t0)/1000)|0;},1000);
+
+/* ---------- MOBILE GESTURES ---------- */
+let scale=1,offsetX=0,offsetY=0,touchStartDist=0,touchStartScale=1,touchStart=[0,0],touchOffsetStart=[0,0];
+canvas.addEventListener("touchstart",e=>{
+  if(e.touches.length===2){touchStartDist=getDist(e.touches);touchStartScale=scale;touchOffsetStart=[offsetX,offsetY];}
+  else if(e.touches.length===1){touchStart=[e.touches[0].clientX,e.touches[0].clientY];}
+});
+canvas.addEventListener("touchmove",e=>{
+  e.preventDefault();
+  if(e.touches.length===2){let d=getDist(e.touches);scale=touchStartScale*d/touchStartDist;offsetX=touchOffsetStart[0];offsetY=touchOffsetStart[1];redraw();}
+  else if(e.touches.length===1){offsetX+=e.touches[0].clientX-touchStart[0];offsetY+=e.touches[0].clientY-touchStart[1];touchStart=[e.touches[0].clientX,e.touches[0].clientY];redraw();}
+});
+function getDist(t){return Math.hypot(t[0].clientX-t[1].clientX,t[0].clientY-t[1].clientY);}
+</script>
+</body>
+</html>
