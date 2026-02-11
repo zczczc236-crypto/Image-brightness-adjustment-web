@@ -22,6 +22,7 @@ let history = []; // [{layerIndex, img}]
 let redoStack = [];
 let isFilling = false;
 let usingEraser = false;
+const HISTORY_LIMIT = 150;
 
 /* ========= 초기화 ========= */
 for(let i=1;i<=20;i++){
@@ -43,6 +44,7 @@ function resizeContainerCanvases(){
   const w = container.clientWidth;
   const h = container.clientHeight;
   layers.forEach(layer => {
+    // 보존하면서 크기 조정
     const tmp = document.createElement('canvas');
     tmp.width = layer.canvas.width;
     tmp.height = layer.canvas.height;
@@ -53,60 +55,16 @@ function resizeContainerCanvases(){
   });
 }
 
-/* ========= 히스토리: snapshot push/pop ========= */
-function pushHistorySnapshot(layer){
-  if(!layer) return;
-  try {
-    const img = layer.ctx.getImageData(0,0,layer.canvas.width,layer.canvas.height);
-    history.push({layerIndex: layers.indexOf(layer), img});
-    if(history.length > 300) history.shift();
-    // clear redo on new action
-    redoStack = [];
-  } catch(e){
-    console.warn('pushHistorySnapshot error', e);
-  }
-}
-
-function undo(){
-  if(history.length === 0) return;
-  const state = history.pop();
-  const layer = layers[state.layerIndex];
-  if(!layer) return;
-  try {
-    const current = layer.ctx.getImageData(0,0,layer.canvas.width,layer.canvas.height);
-    redoStack.push({layerIndex: state.layerIndex, img: current});
-    layer.ctx.putImageData(state.img, 0, 0);
-    // if activeLayer was different, keep active selection
-    updateLayersPanel();
-  } catch(e){
-    console.warn('undo error', e);
-  }
-}
-
-function redo(){
-  if(redoStack.length === 0) return;
-  const state = redoStack.pop();
-  const layer = layers[state.layerIndex];
-  if(!layer) return;
-  try {
-    const current = layer.ctx.getImageData(0,0,layer.canvas.width,layer.canvas.height);
-    history.push({layerIndex: state.layerIndex, img: current});
-    layer.ctx.putImageData(state.img, 0, 0);
-    updateLayersPanel();
-  } catch(e){
-    console.warn('redo error', e);
-  }
-}
-
-/* ========= 레이어 생성/삭제/이동/합체 ========= */
+/* 레이어 생성 */
 function createLayer(name='Layer'){
   const canvas = document.createElement('canvas');
   canvas.width = container.clientWidth || 800;
   canvas.height = container.clientHeight || 600;
+  canvas.style.touchAction = 'none';
   canvas.style.position = 'absolute';
-  canvas.style.top = '0';
   canvas.style.left = '0';
-  canvas.style.zIndex = layers.length; // simple stacking
+  canvas.style.top = '0';
+  canvas.style.zIndex = layers.length; // stacking order
   container.appendChild(canvas);
   const ctx = canvas.getContext('2d');
   ctx.lineJoin = 'round';
@@ -117,39 +75,80 @@ function createLayer(name='Layer'){
   attachDrawingEvents(canvas);
   updateLayersPanel();
   drawLayers();
-  // store initial empty snapshot for undo baseline
-  pushHistorySnapshot(layer);
+  // 초기 상태 스냅샷
+  pushSnapshot(activeLayer);
   return layer;
 }
 
-function deleteLayer(layer){
-  if(layers.length <= 1) return;
+/* ========= 히스토리 관리 (레이어별 스냅샷) ========= */
+function pushSnapshot(layer){
   try {
-    container.removeChild(layer.canvas);
-  } catch(e){}
-  layers = layers.filter(l => l !== layer);
-  if(activeLayer === layer) activeLayer = layers[layers.length - 1];
-  updateLayersPanel();
-  drawLayers();
+    const idx = layers.indexOf(layer);
+    if(idx < 0) return;
+    const img = layer.ctx.getImageData(0,0, layer.canvas.width, layer.canvas.height);
+    history.push({layerIndex: idx, img});
+    if(history.length > HISTORY_LIMIT) history.shift();
+    // 새로운 action invalidates redo
+    redoStack = [];
+  } catch(e) {
+    console.warn('pushSnapshot error', e);
+  }
 }
 
+function undo(){
+  if(history.length === 0) return;
+  const last = history.pop();
+  const layer = layers[last.layerIndex];
+  if(!layer) return;
+  try {
+    const current = layer.ctx.getImageData(0,0, layer.canvas.width, layer.canvas.height);
+    redoStack.push({layerIndex: last.layerIndex, img: current});
+    layer.ctx.putImageData(last.img, 0, 0);
+    updateLayersPanel();
+  } catch(e) {
+    console.warn('undo error', e);
+  }
+}
+function redo(){
+  if(redoStack.length === 0) return;
+  const next = redoStack.pop();
+  const layer = layers[next.layerIndex];
+  if(!layer) return;
+  try {
+    const current = layer.ctx.getImageData(0,0, layer.canvas.width, layer.canvas.height);
+    history.push({layerIndex: next.layerIndex, img: current});
+    layer.ctx.putImageData(next.img,0,0);
+    updateLayersPanel();
+  } catch(e) {
+    console.warn('redo error', e);
+  }
+}
+undoBtn.addEventListener('click', undo);
+redoBtn.addEventListener('click', redo);
+
+/* ========= 레이어 조작 ========= */
+function deleteLayer(layer){
+  if(layers.length <= 1) return;
+  const idx = layers.indexOf(layer);
+  if(idx < 0) return;
+  container.removeChild(layer.canvas);
+  layers.splice(idx,1);
+  if(activeLayer === layer) activeLayer = layers[layers.length - 1];
+  updateLayersPanel();
+}
 function moveLayer(layer, dir){
   const idx = layers.indexOf(layer);
-  if(idx === -1) return;
   const newIdx = idx + dir;
   if(newIdx < 0 || newIdx >= layers.length) return;
   layers.splice(idx,1);
   layers.splice(newIdx,0,layer);
-  // reappend canvases in order to reflect stacking
-  layers.forEach((l, i) => {
+  // re-append canvases in order to keep stacking visually correct
+  layers.forEach((l,i) => {
     l.canvas.style.zIndex = i;
     container.appendChild(l.canvas);
   });
   updateLayersPanel();
-  drawLayers();
 }
-
-/* merge active into neighbor (below preferred) */
 function mergeActiveWithNeighbor(){
   if(layers.length < 2 || !activeLayer) return;
   const idx = layers.indexOf(activeLayer);
@@ -157,70 +156,60 @@ function mergeActiveWithNeighbor(){
   if(targetIdx < 0) targetIdx = idx + 1;
   if(targetIdx < 0 || targetIdx >= layers.length) return;
   const target = layers[targetIdx];
-  // push snapshot of target before merge
-  pushHistorySnapshot(target);
-  // draw active onto target preserving dimensions
+  // save snapshot of target before merging
+  pushSnapshot(target);
   target.ctx.drawImage(activeLayer.canvas, 0,0);
   deleteLayer(activeLayer);
   activeLayer = target;
   updateLayersPanel();
-  drawLayers();
 }
+mergeLayerBtn.addEventListener('click', mergeActiveWithNeighbor);
 
-/* draw visibility + brightness */
+/* 레이어 가시성/명도 적용 */
 function drawLayers(){
-  layers.forEach(layer => {
+  layers.forEach(layer=>{
     layer.canvas.style.display = layer.visible ? 'block' : 'none';
     layer.canvas.style.filter = `brightness(${layer.brightness})`;
   });
 }
 
-/* layers panel */
+/* 레이어 패널 렌더링 */
 function updateLayersPanel(){
   layersPanel.innerHTML = '';
-  // show topmost first
-  const items = layers.slice().reverse();
-  items.forEach((layer, revIdx) => {
+  // show top-most first
+  layers.slice().reverse().forEach((layer, revIdx) => {
     const idx = layers.length - 1 - revIdx;
     const item = document.createElement('div');
     item.className = 'layer-item' + (layer === activeLayer ? ' active' : '');
     item.dataset.index = idx;
-
     const name = document.createElement('span');
     name.className = 'name';
     name.textContent = layer.name;
-
     const range = document.createElement('input');
     range.type = 'range';
     range.min = '0';
     range.max = '2';
     range.step = '0.01';
     range.value = layer.brightness;
-
-    const controls = document.createElement('div');
-    controls.className = 'layer-controls';
-
+    range.title = '명도';
     const visBtn = document.createElement('button');
     visBtn.textContent = layer.visible ? '👁' : '🚫';
     visBtn.title = '가시성';
-
-    const upBtn = document.createElement('button');
-    upBtn.textContent = '⬆️';
-    upBtn.title = '위로';
-
-    const downBtn = document.createElement('button');
-    downBtn.textContent = '⬇️';
-    downBtn.title = '아래로';
-
     const delBtn = document.createElement('button');
     delBtn.textContent = '❌';
     delBtn.title = '삭제';
-
+    const upBtn = document.createElement('button');
+    upBtn.textContent = '⬆️';
+    upBtn.title = '위로';
+    const downBtn = document.createElement('button');
+    downBtn.textContent = '⬇️';
+    downBtn.title = '아래로';
+    const controls = document.createElement('div');
+    controls.className = 'layer-controls';
     controls.appendChild(visBtn);
     controls.appendChild(upBtn);
     controls.appendChild(downBtn);
     controls.appendChild(delBtn);
-
     item.appendChild(name);
     item.appendChild(range);
     item.appendChild(controls);
@@ -230,60 +219,108 @@ function updateLayersPanel(){
       activeLayer = layer;
       updateLayersPanel();
     });
-
     range.addEventListener('input', (e) => {
       layer.brightness = parseFloat(range.value);
       drawLayers();
     });
-
     visBtn.addEventListener('click', (e) => {
       e.stopPropagation();
       layer.visible = !layer.visible;
       visBtn.textContent = layer.visible ? '👁' : '🚫';
       drawLayers();
     });
-
+    delBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      deleteLayer(layer);
+    });
     upBtn.addEventListener('click', (e) => {
       e.stopPropagation();
       moveLayer(layer, +1);
     });
-
     downBtn.addEventListener('click', (e) => {
       e.stopPropagation();
       moveLayer(layer, -1);
-    });
-
-    delBtn.addEventListener('click', (e) => {
-      e.stopPropagation();
-      deleteLayer(layer);
     });
 
     layersPanel.appendChild(item);
   });
 }
 
-/* ========= 도구: 페인트통/지우개/취소/되돌리기 동작 연결 ========= */
+/* ========= 도구: 페인트통, 지우개, 레이어 토글 ========= */
 fillBtn.addEventListener('click', () => {
   if(!activeLayer) return;
-  pushHistorySnapshot(activeLayer);
+  // push snapshot BEFORE change
+  pushSnapshot(activeLayer);
   activeLayer.ctx.save();
   activeLayer.ctx.fillStyle = colorPicker.value;
   activeLayer.ctx.fillRect(0,0, activeLayer.canvas.width, activeLayer.canvas.height);
   activeLayer.ctx.restore();
 });
-
 eraserBtn.addEventListener('click', () => {
   usingEraser = !usingEraser;
   eraserBtn.style.background = usingEraser ? '#ddd' : '';
 });
-
-undoBtn.addEventListener('click', () => undo());
-redoBtn.addEventListener('click', () => redo());
-
-zoomOutBtn.addEventListener('click', () => {
-  container.style.transform = 'scale(0.5)';
-  container.style.transformOrigin = '0 0';
+toggleLayersBtn.addEventListener('click', () => {
+  layersPanel.classList.toggle('visible');
+  layersPanel.setAttribute('aria-hidden', !layersPanel.classList.contains('visible'));
 });
+
+/* ========= 그리기: PointerEvents 방식으로 안정적 처리 ========= */
+function attachDrawingEvents(canvas){
+  let drawing = false;
+  let last = {x:0,y:0};
+  let pointerId = null;
+
+  function pointFromEvent(e){
+    const rect = container.getBoundingClientRect();
+    return { x: e.clientX - rect.left, y: e.clientY - rect.top };
+  }
+
+  function onPointerDown(e){
+    // only handle primary button or touch contact
+    if(e.pointerType === 'mouse' && e.button !== 0) return;
+    e.preventDefault();
+    canvas.setPointerCapture(e.pointerId);
+    pointerId = e.pointerId;
+    drawing = true;
+    last = pointFromEvent(e);
+    // snapshot before action to allow undo
+    if(activeLayer) pushSnapshot(activeLayer);
+    // if fill mode had been set previously via isFilling flag (not used here) - handled by fill button directly
+  }
+  function onPointerMove(e){
+    if(!drawing || pointerId !== e.pointerId) return;
+    e.preventDefault();
+    const pos = pointFromEvent(e);
+    if(!activeLayer) return;
+    const ctx = activeLayer.ctx;
+    ctx.save();
+    ctx.globalCompositeOperation = usingEraser ? 'destination-out' : 'source-over';
+    ctx.strokeStyle = colorPicker.value;
+    ctx.lineWidth = parseFloat(brushSelect.value);
+    ctx.lineCap = 'round';
+    ctx.lineJoin = 'round';
+    ctx.beginPath();
+    ctx.moveTo(last.x, last.y);
+    ctx.lineTo(pos.x, pos.y);
+    ctx.stroke();
+    ctx.restore();
+    last = pos;
+  }
+  function onPointerUp(e){
+    if(pointerId === e.pointerId){
+      drawing = false;
+      try { canvas.releasePointerCapture(e.pointerId); } catch(_) {}
+      pointerId = null;
+      // after finishing stroke, nothing else needed because snapshot was created before stroke
+    }
+  }
+
+  canvas.addEventListener('pointerdown', onPointerDown);
+  canvas.addEventListener('pointermove', onPointerMove);
+  canvas.addEventListener('pointerup', onPointerUp);
+  canvas.addEventListener('pointercancel', onPointerUp);
+}
 
 /* ========= 저장/갤러리 ========= */
 saveBtn.addEventListener('click', () => {
@@ -311,91 +348,16 @@ function addGalleryThumbnail(src){
     const image = new Image();
     image.onload = () => {
       if(!activeLayer) createLayer('Layer '+(layers.length+1));
-      pushHistorySnapshot(activeLayer);
+      // push snapshot of active layer then draw
+      pushSnapshot(activeLayer);
       activeLayer.ctx.drawImage(image, 0,0, activeLayer.canvas.width, activeLayer.canvas.height);
-      pushHistorySnapshot(activeLayer); // capture after
     };
     image.src = src;
   });
   galleryPanel.appendChild(img);
 }
 
-/* ========= 레이어 창 토글 ========= */
-toggleLayersBtn.addEventListener('click', () => {
-  layersPanel.classList.toggle('visible');
-  layersPanel.setAttribute('aria-hidden', !layersPanel.classList.contains('visible'));
-});
-
-/* ========= 레이어 추가/합체 버튼 연결 ========= */
-addLayerBtn.addEventListener('click', () => createLayer('Layer '+(layers.length+1)));
-mergeLayerBtn.addEventListener('click', () => mergeActiveWithNeighbor());
-
-/* ========= 그리기 이벤트 (마우스 + 터치) ========= */
-function attachDrawingEvents(canvas){
-  let drawing = false;
-  let last = {x:0,y:0};
-
-  function pointerToPos(ev){
-    const rect = container.getBoundingClientRect();
-    if(ev.touches && ev.touches.length > 0){
-      return {x: ev.touches[0].clientX - rect.left, y: ev.touches[0].clientY - rect.top};
-    } else if(ev.clientX !== undefined){
-      return {x: ev.clientX - rect.left, y: ev.clientY - rect.top};
-    }
-    return null;
-  }
-
-  function start(e){
-    if(!activeLayer) return;
-    const pos = pointerToPos(e);
-    if(!pos) return;
-    e.preventDefault();
-    // snapshot before the change
-    pushHistorySnapshot(activeLayer);
-    last = pos;
-    drawing = true;
-  }
-
-  function move(e){
-    if(!drawing || !activeLayer) return;
-    const pos = pointerToPos(e);
-    if(!pos) return;
-    e.preventDefault();
-    const ctx = activeLayer.ctx;
-    ctx.save();
-    ctx.globalCompositeOperation = usingEraser ? 'destination-out' : 'source-over';
-    ctx.strokeStyle = colorPicker.value;
-    ctx.lineWidth = parseFloat(brushSelect.value);
-    ctx.lineCap = 'round';
-    ctx.lineJoin = 'round';
-    ctx.beginPath();
-    ctx.moveTo(last.x, last.y);
-    ctx.lineTo(pos.x, pos.y);
-    ctx.stroke();
-    ctx.restore();
-    last = pos;
-  }
-
-  function end(e){
-    if(drawing && activeLayer){
-      // snapshot after is already captured via previous push; to allow redo we push current state as another history entry (so undo restores previous)
-      pushHistorySnapshot(activeLayer);
-    }
-    drawing = false;
-  }
-
-  // mouse
-  canvas.addEventListener('mousedown', start);
-  window.addEventListener('mousemove', move, {passive:false});
-  window.addEventListener('mouseup', end);
-
-  // touch
-  canvas.addEventListener('touchstart', start, {passive:false});
-  canvas.addEventListener('touchmove', move, {passive:false});
-  canvas.addEventListener('touchend', end);
-}
-
-/* ========= 이미지 삽입 (PC 마우스 + 모바일 터치 모두) ========= */
+/* ========= 이미지 삽입 (PC + 모바일 모두) ========= */
 imageInput.addEventListener('change', (ev) => {
   const file = ev.target.files && ev.target.files[0];
   if(!file) return;
@@ -408,7 +370,6 @@ imageInput.addEventListener('change', (ev) => {
 });
 
 function openImageEditorOverlay(image){
-  // overlay canvas
   const overlay = document.createElement('canvas');
   overlay.width = container.clientWidth;
   overlay.height = container.clientHeight;
@@ -420,19 +381,16 @@ function openImageEditorOverlay(image){
   container.appendChild(overlay);
   const octx = overlay.getContext('2d');
 
-  // source canvas
   const src = document.createElement('canvas');
   src.width = image.width;
   src.height = image.height;
-  const sctx = src.getContext('2d');
-  sctx.drawImage(image, 0,0);
+  src.getContext('2d').drawImage(image, 0,0);
 
-  // transform state
-  let scale = Math.min( Math.min(overlay.width / image.width, overlay.height / image.height), 1 );
+  let scale = Math.min(Math.min(overlay.width / image.width, overlay.height / image.height), 1);
+  if(!isFinite(scale) || scale <= 0) scale = 1;
   let angle = 0;
   let pos = { x: (overlay.width - image.width*scale)/2, y: (overlay.height - image.height*scale)/2 };
 
-  // gesture
   let dragging = false;
   let lastPointer = null;
   let lastDist = 0;
@@ -457,38 +415,35 @@ function openImageEditorOverlay(image){
     }
     return null;
   }
-  function distance(a,b){
-    return Math.hypot(a.x-b.x, a.y-b.y);
-  }
-  function angleDeg(a,b){
-    return Math.atan2(b.y-a.y, b.x-a.x) * 180 / Math.PI;
-  }
+  function distance(a,b){ return Math.hypot(a.x-b.x, a.y-b.y); }
+  function angleDeg(a,b){ return Math.atan2(b.y-a.y, b.x-a.x) * 180 / Math.PI; }
 
-  // mouse handlers
+  /* mouse handlers */
   overlay.addEventListener('mousedown', (e) => {
+    e.preventDefault();
     dragging = true;
-    lastPointer = getPointFromEvent(e);
+    const rect = container.getBoundingClientRect();
+    lastPointer = { x: e.clientX - rect.left, y: e.clientY - rect.top };
   });
   window.addEventListener('mousemove', (e) => {
     if(!dragging) return;
-    const p = getPointFromEvent(e);
-    if(!p) return;
+    const rect = container.getBoundingClientRect();
+    const p = { x: e.clientX - rect.left, y: e.clientY - rect.top };
     pos.x += p.x - lastPointer.x;
     pos.y += p.y - lastPointer.y;
     lastPointer = p;
     draw();
   });
   window.addEventListener('mouseup', () => {
-    if(dragging) {
-      dragging = false;
-    }
+    if(dragging) dragging = false;
   });
 
-  // touch handlers
+  /* touch handlers */
   overlay.addEventListener('touchstart', (e) => {
     e.preventDefault();
     if(e.touches.length === 1){
-      lastPointer = getPointFromEvent(e,0);
+      const p = getPointFromEvent(e,0);
+      lastPointer = p;
       dragging = true;
     } else if(e.touches.length >= 2){
       const p1 = getPointFromEvent(e,0);
@@ -514,7 +469,7 @@ function openImageEditorOverlay(image){
       if(lastDist > 0){
         const factor = newDist / lastDist;
         scale *= factor;
-        scale = Math.max(0.05, Math.min(scale, 20));
+        scale = Math.max(0.05, Math.min(scale, 10));
       }
       angle += newAngle - lastAngle;
       lastDist = newDist;
@@ -527,23 +482,22 @@ function openImageEditorOverlay(image){
     if(e.touches.length === 0) dragging = false;
   });
 
-  // wheel zoom
+  /* wheel zoom */
   overlay.addEventListener('wheel', (e) => {
     e.preventDefault();
-    const delta = e.deltaY < 0 ? 1.08 : 0.92;
     const rect = container.getBoundingClientRect();
     const mx = e.clientX - rect.left;
     const my = e.clientY - rect.top;
     const cx = (mx - pos.x) / scale;
     const cy = (my - pos.y) / scale;
+    const delta = e.deltaY < 0 ? 1.08 : 0.92;
     scale *= delta;
-    scale = Math.max(0.05, Math.min(scale, 50));
+    scale = Math.max(0.05, Math.min(scale, 10));
     pos.x = mx - cx * scale;
     pos.y = my - cy * scale;
     draw();
   }, {passive:false});
 
-  // action buttons
   const actions = document.createElement('div');
   actions.className = 'overlay-action';
   const confirmBtn = document.createElement('button');
@@ -556,39 +510,41 @@ function openImageEditorOverlay(image){
 
   confirmBtn.addEventListener('click', () => {
     if(!activeLayer) createLayer('Layer '+(layers.length+1));
-    // snapshot before
-    pushHistorySnapshot(activeLayer);
+    // push snapshot of active layer before drawing
+    pushSnapshot(activeLayer);
     activeLayer.ctx.save();
     activeLayer.ctx.translate(pos.x + (image.width*scale)/2, pos.y + (image.height*scale)/2);
     activeLayer.ctx.rotate(angle * Math.PI / 180);
     activeLayer.ctx.drawImage(src, - (image.width*scale)/2, - (image.height*scale)/2, image.width*scale, image.height*scale);
     activeLayer.ctx.restore();
-    // snapshot after
-    pushHistorySnapshot(activeLayer);
     cleanup();
   });
 
-  cancelBtn.addEventListener('click', cleanup);
+  cancelBtn.addEventListener('click', () => { cleanup(); });
 
   function cleanup(){
     if(overlay && overlay.parentElement) container.removeChild(overlay);
     if(actions && actions.parentElement) document.body.removeChild(actions);
-    // no anonymous window listeners left that are problematic (they check flags)
+    // allow garbage collection of listeners
   }
 }
 
-/* ========= 키보드 단축 (안전) ========= */
-window.addEventListener('keydown', (e) => {
-  if((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'z'){
-    e.preventDefault();
-    undo();
-  }
-  if((e.ctrlKey || e.metaKey) && (e.key.toLowerCase() === 'y' || (e.shiftKey && e.key.toLowerCase()==='z'))){
-    e.preventDefault();
-    redo();
-  }
-});
-
-/* ========= 초기화 UI 갱신 ========= */
+/* ========= 유틸: 기본 레이어 보장 및 이벤트 등록 ========= */
+if(layers.length === 0){
+  createLayer('Layer 1');
+}
+layers.forEach(l => attachDrawingEvents(l.canvas));
 updateLayersPanel();
 drawLayers();
+
+/* ========= 단축키: undo/redo ========= */
+window.addEventListener('keydown', (e) => {
+  if((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'z'){
+    e.shiftKey ? redo() : undo();
+    e.preventDefault();
+  }
+  if((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'y'){
+    redo();
+    e.preventDefault();
+  }
+});
