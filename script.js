@@ -25,6 +25,7 @@ for(let i=1;i<=20;i++){
 }
 brushSelect.value=5;
 
+// 레이어 생성
 function createLayer(name='Layer'){
   const canvas = document.createElement('canvas');
   canvas.width = container.clientWidth;
@@ -36,12 +37,14 @@ function createLayer(name='Layer'){
   activeLayer = layer;
   updateLayersPanel();
   attachDrawingEvents(canvas);
+  drawLayers();
   return layer;
 }
 
+// 레이어 패널 갱신
 function updateLayersPanel(){
   layersPanel.innerHTML='';
-  layers.forEach((layer,i)=>{
+  layers.forEach(layer=>{
     const div = document.createElement('div');
     div.className='layer-item';
     div.innerHTML=`<span>${layer.name}</span>
@@ -60,6 +63,7 @@ function updateLayersPanel(){
   });
 }
 
+// 레이어 표시
 function drawLayers(){
   layers.forEach(layer=>{
     layer.canvas.style.display=layer.visible?'block':'none';
@@ -67,10 +71,9 @@ function drawLayers(){
   });
 }
 
+// 그림 그리기 이벤트
 function attachDrawingEvents(canvas){
-  let drawing=false;
-  let lastX=0,lastY=0;
-
+  let drawing=false, lastX=0, lastY=0;
   function start(e){
     e.preventDefault();
     const pos = getPos(e);
@@ -169,7 +172,7 @@ function loadGalleryImage(src){
 
 addLayerBtn.addEventListener('click',()=>{ createLayer('Layer '+(layers.length+1)); });
 
-// 이미지 삽입 + 터치 제스처
+// 이미지 삽입 + 모바일 터치 지원
 imageInput.addEventListener('change',(e)=>{
   const file = e.target.files[0];
   if(!file) return;
@@ -246,7 +249,6 @@ imageInput.addEventListener('change',(e)=>{
       return Math.atan2(p2.clientY-p1.clientY, p2.clientX-p1.clientX)*180/Math.PI;
     }
 
-    // 화면 탭으로 확정/취소 버튼
     const confirmBtn=document.createElement('button');
     confirmBtn.textContent='✔';
     confirmBtn.style.position='absolute';
