@@ -1,5 +1,7 @@
 /* 파일명: script.js
-   전체 통합본 — 요청받은 모든 기능 반영
+   전체 통합본 — 요청받은 모든 기능 반영 (모바일 개선, 줌/팬/핀치, flood-fill 페인트통,
+   블러/투명도 레이어 제어, 캔버스 리사이즈, 갤러리 로컬저장, 히스토리(전체 레이어 스냅샷),
+   브러시/지우개 최대 100, 지우개 undo 에서 한 번만 되도록 수정 등)
    ※ 요약 없음 — 코드 전체 제공
 
    참고(알고리즘/웹API 관련 구현 근거):
@@ -401,76 +403,6 @@ function attachDrawingEvents(canvas) {
   canvas.addEventListener('pointerleave', (e) => { if (drawing && e.pointerId === pointerId) onPointerUp(e); });
 }
 
-/* 그림 그리기: Pointer Events 통합 + 한 번만 history 저장 (지우개 history 수정 반영) */
-function attachDrawingEvents(canvas) {
-  let drawing = false;
-  let pointerId = null;
-  let last = { x: 0, y: 0 };
-  let strokeCaptured = false;
-
-  function toCanvasPos(x, y) {
-    const rect = container.getBoundingClientRect();
-    return { x: x - rect.left, y: y - rect.top };
-  }
-
-  function startStroke() {
-    strokeCaptured = false;
-  }
-
-  function endStroke() {
-    if (!strokeCaptured) return;
-    saveHistory();
-    strokeCaptured = false;
-  }
-
-  function onDown(e) {
-    if (e.target.tagName === 'BUTTON') return;
-    canvas.setPointerCapture?.(e.pointerId);
-    pointerId = e.pointerId;
-    drawing = true;
-    last = toCanvasPos(e.clientX, e.clientY);
-    startStroke();
-    if (activeLayer) {
-      const ctx = activeLayer.ctx;
-      ctx.beginPath();
-      ctx.moveTo(last.x, last.y);
-    }
-  }
-
-  function onMove(e) {
-    if (!drawing || e.pointerId !== pointerId) return;
-    const p = toCanvasPos(e.clientX, e.clientY);
-    if (!activeLayer) return;
-    const ctx = activeLayer.ctx;
-    ctx.save();
-    ctx.globalCompositeOperation = usingEraser ? 'destination-out' : 'source-over';
-    ctx.strokeStyle = colorPicker.value;
-    ctx.lineWidth = Math.max(1, parseFloat(brushSelect.value) || 1);
-    ctx.lineCap = 'round';
-    ctx.lineJoin = 'round';
-    ctx.beginPath();
-    ctx.moveTo(last.x, last.y);
-    ctx.lineTo(p.x, p.y);
-    ctx.stroke();
-    ctx.restore();
-    last = p;
-    strokeCaptured = true;
-  }
-
-  function onUp(e) {
-    if (e.pointerId !== pointerId) return;
-    canvas.releasePointerCapture?.(e.pointerId);
-    drawing = false;
-    endStroke();
-  }
-
-  canvas.addEventListener('pointerdown', onDown, { passive: false });
-  window.addEventListener('pointermove', onMove, { passive: false });
-  window.addEventListener('pointerup', onUp);
-  canvas.addEventListener('pointercancel', onUp);
-  canvas.addEventListener('pointerleave', (e) => { if (drawing && e.pointerId === pointerId) onUp(e); });
-}
-
 /* ===== Flood Fill (페인트통) 구현 — iterative stack-based (빠른 픽셀 접근) ===== */
 /* References: Stack-based iterative algorithms & optimizations. :contentReference[oaicite:4]{index=4} */
 function colorToRgbaArray(hexOrRgb) {
@@ -550,11 +482,6 @@ function canvasSetMode(m) {
     fillBtn.style.background = '';
   }
 }
-
-/* Flood Fill (페인트 통) */
-fillBtn.addEventListener('click', () => {
-  setPaintBucketMode();
-});
 
 /* Use a top-level pointer handler to capture bucket click */
 container.addEventListener('pointerdown', (ev) => {
@@ -973,68 +900,9 @@ function addGalleryImage(dataUrl) {
   addGalleryImageElement(dataUrl);
   saveGalleryToStorage();
 }
-/* 저장/갤러리 저장 */
-const GALLERY_KEY = 'simple_canvas_gallery_v1';
-function loadGalleryFromStorage() {
-  try {
-    const raw = localStorage.getItem(GALLERY_KEY);
-    if (!raw) return;
-    const arr = JSON.parse(raw);
-    arr.forEach(url => addGalleryImageElement(url));
-  } catch {}
-}
-function saveGalleryToStorage() {
-  try {
-    const thumbs = Array.from(galleryPanel.querySelectorAll('img.gallery-item')).map(i => i.src);
-    localStorage.setItem(GALLERY_KEY, JSON.stringify(thumbs));
-  } catch {}
-}
-function addGalleryImage(dataUrl) {
-  addGalleryImageElement(dataUrl);
-  saveGalleryToStorage();
-}
-function addGalleryImageElement(dataUrl) {
-  const img = document.createElement('img');
-  img.className = 'gallery-item';
-  img.src = dataUrl;
-  img.addEventListener('click', () => {
-    saveHistory();
-    const image = new Image();
-    image.onload = () => {
-      if (!activeLayer) createLayer();
-      activeLayer.ctx.clearRect(0,0,container.clientWidth,container.clientHeight);
-      activeLayer.ctx.drawImage(image,0,0,container.clientWidth,container.clientHeight);
-      applyLayerStyles(activeLayer);
-      saveHistory();
-    };
-    image.src = dataUrl;
-  });
-  galleryPanel.appendChild(img);
-}
-
-loadGalleryFromStorage();
-
-saveBtn.addEventListener('click', () => {
-  const tmp = document.createElement('canvas');
-  setCanvasSizeForDisplay(tmp, container.clientWidth, container.clientHeight);
-  const tctx = tmp.getContext('2d');
-  for(let i=0;i<layers.length;i++) {
-    const l = layers[i];
-    if(!l.visible) continue;
-    tctx.save();
-    tctx.globalAlpha = l.opacity ?? 1;
-    tctx.drawImage(l.canvas,0,0,container.clientWidth,container.clientHeight);
-    tctx.restore();
-  }
-  const data = tmp.toDataURL('image/png');
-  const link = document.createElement('a');
-  link.href = data; link.download = 'drawing.png';
-  link.click();
-  addGalleryImage(data);
-});
 
 /* ===== 키보드 단축 ===== */
 window.addEventListener('keydown', (e) => {
   if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'z') { e.preventDefault(); undo(); }
   if ((e.ctrlKey || e.metaKey) && (e.key.toLowerCase() === 'y' || (e.shiftKey && e.key.toLowerCase() === 'z'))) { e.preventDefault(); redo(); }
-}); 
+});
